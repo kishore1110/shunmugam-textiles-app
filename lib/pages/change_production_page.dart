@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../theme/app_theme.dart';
 import '../services/firestore_service.dart';
@@ -212,6 +213,8 @@ class _ChangeProductionPageState extends State<ChangeProductionPage> {
                   Expanded(
                     child: TextFormField(
                       controller: _receiptNoController,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                       decoration: const InputDecoration(
                         hintText: 'Enter receipt number (e.g., ST1001)',
                         prefixIcon: Icon(Icons.receipt_long),

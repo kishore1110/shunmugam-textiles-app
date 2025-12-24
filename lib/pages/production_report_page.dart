@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
@@ -67,17 +68,37 @@ class _ProductionReportPageState extends State<ProductionReportPage> {
   }
 
   Future<void> _loadReceipts() async {
-    if (_startDate == null || _endDate == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select both start and end dates')),
-      );
-      return;
-    }
-
     setState(() => _isLoading = true);
     final supervisorId = _supervisorIdController.text.trim();
     final loomNo = _loomNoController.text.trim();
     final receiptId = _receiptIdController.text.trim();
+
+    // Allow lookup by receipt ID without dates
+    if ((_startDate == null || _endDate == null) && receiptId.isNotEmpty) {
+      final receipt = await _firestoreService.getReceiptByNumber(receiptId);
+      if (!mounted) return;
+      setState(() {
+        _receipts = receipt != null ? [receipt] : [];
+        _isLoading = false;
+      });
+      if (receipt == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Receipt not found')),
+        );
+      }
+      return;
+    }
+
+    // For range search, require both dates
+    if (_startDate == null || _endDate == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please select both start and end dates')),
+        );
+      }
+      setState(() => _isLoading = false);
+      return;
+    }
 
     final receipts = await _firestoreService.getReceiptsByDateRange(
       _startDate!,
@@ -87,6 +108,7 @@ class _ProductionReportPageState extends State<ProductionReportPage> {
       receiptNo: receiptId.isEmpty ? null : receiptId,
     );
 
+    if (!mounted) return;
     setState(() {
       _receipts = receipts;
       _isLoading = false;
@@ -473,171 +495,180 @@ class _ProductionReportPageState extends State<ProductionReportPage> {
               label: const Text('Print All'),
             )
           : null,
-      body: Column(
-        children: [
-          // Date Filter Card
-          if (_showFilters)
-            Card(
-              margin: const EdgeInsets.all(16),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Filter by Date Range',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Date Filter Card
+              if (_showFilters)
+                Card(
+                  margin: const EdgeInsets.all(16),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _buildDatePickerField(
-                          placeholder: 'Start Date',
-                          value: _startDate,
-                          onTap: _selectStartDate,
+                        Text(
+                          'Filter by Date Range',
+                          style: Theme.of(context).textTheme.titleMedium,
                         ),
-                        const SizedBox(width: 12),
-                        _buildDatePickerField(
-                          placeholder: 'End Date',
-                          value: _endDate,
-                          onTap: _selectEndDate,
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            _buildDatePickerField(
+                              placeholder: 'Start Date',
+                              value: _startDate,
+                              onTap: _selectStartDate,
+                            ),
+                            const SizedBox(width: 12),
+                            _buildDatePickerField(
+                              placeholder: 'End Date',
+                              value: _endDate,
+                              onTap: _selectEndDate,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+
+                        // Supervisor ID Filter
+                        Text(
+                          'Supervisor ID',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 8),
+                        TextFormField(
+                          controller: _supervisorIdController,
+                          decoration: InputDecoration(
+                            hintText: 'Enter Supervisor ID (optional)',
+                            prefixIcon: const Icon(Icons.person_outline),
+                            suffixIcon: _supervisorIdController.text.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear),
+                                    onPressed: () {
+                                      _supervisorIdController.clear();
+                                      setState(() {});
+                                    },
+                                  )
+                                : null,
+                          ),
+                          onChanged: (value) => setState(() {}),
+                        ),
+                        const SizedBox(height: 16),
+
+                        // Loom No Filter
+                        Text(
+                          'Loom No (Weaver ID)',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 8),
+                        TextFormField(
+                          controller: _loomNoController,
+                          decoration: InputDecoration(
+                            hintText: 'Enter Loom No (optional)',
+                            prefixIcon: const Icon(Icons.badge_outlined),
+                            suffixIcon: _loomNoController.text.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear),
+                                    onPressed: () {
+                                      _loomNoController.clear();
+                                      setState(() {});
+                                    },
+                                  )
+                                : null,
+                          ),
+                          onChanged: (value) => setState(() {}),
+                        ),
+                        const SizedBox(height: 16),
+
+                        // Receipt ID Filter
+                        Text(
+                          'Receipt ID',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 8),
+                        TextFormField(
+                          controller: _receiptIdController,
+                          keyboardType: TextInputType.number,
+                          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                          decoration: InputDecoration(
+                            hintText: 'Enter Receipt ID (optional)',
+                            prefixIcon: const Icon(Icons.receipt_long_outlined),
+                            suffixIcon: _receiptIdController.text.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear),
+                                    onPressed: () {
+                                      _receiptIdController.clear();
+                                      setState(() {});
+                                    },
+                                  )
+                                : null,
+                          ),
+                          onChanged: (value) => setState(() {}),
+                        ),
+                        const SizedBox(height: 16),
+
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: _isLoading ? null : _loadReceipts,
+                            child: _isLoading
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Text('Load Report'),
+                          ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 16),
-
-                    // Supervisor ID Filter
-                    Text(
-                      'Supervisor ID',
-                      style: Theme.of(context).textTheme.titleSmall,
-                    ),
-                    const SizedBox(height: 8),
-                    TextFormField(
-                      controller: _supervisorIdController,
-                      decoration: InputDecoration(
-                        hintText: 'Enter Supervisor ID (optional)',
-                        prefixIcon: const Icon(Icons.person_outline),
-                        suffixIcon: _supervisorIdController.text.isNotEmpty
-                            ? IconButton(
-                                icon: const Icon(Icons.clear),
-                                onPressed: () {
-                                  _supervisorIdController.clear();
-                                  setState(() {});
-                                },
-                              )
-                            : null,
-                      ),
-                      onChanged: (value) => setState(() {}),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Loom No Filter
-                    Text(
-                      'Loom No (Weaver ID)',
-                      style: Theme.of(context).textTheme.titleSmall,
-                    ),
-                    const SizedBox(height: 8),
-                    TextFormField(
-                      controller: _loomNoController,
-                      decoration: InputDecoration(
-                        hintText: 'Enter Loom No (optional)',
-                        prefixIcon: const Icon(Icons.badge_outlined),
-                        suffixIcon: _loomNoController.text.isNotEmpty
-                            ? IconButton(
-                                icon: const Icon(Icons.clear),
-                                onPressed: () {
-                                  _loomNoController.clear();
-                                  setState(() {});
-                                },
-                              )
-                            : null,
-                      ),
-                      onChanged: (value) => setState(() {}),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Receipt ID Filter
-                    Text(
-                      'Receipt ID',
-                      style: Theme.of(context).textTheme.titleSmall,
-                    ),
-                    const SizedBox(height: 8),
-                    TextFormField(
-                      controller: _receiptIdController,
-                      decoration: InputDecoration(
-                        hintText: 'Enter Receipt ID (optional)',
-                        prefixIcon: const Icon(Icons.receipt_long_outlined),
-                        suffixIcon: _receiptIdController.text.isNotEmpty
-                            ? IconButton(
-                                icon: const Icon(Icons.clear),
-                                onPressed: () {
-                                  _receiptIdController.clear();
-                                  setState(() {});
-                                },
-                              )
-                            : null,
-                      ),
-                      onChanged: (value) => setState(() {}),
-                    ),
-                    const SizedBox(height: 16),
-
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: _isLoading ? null : _loadReceipts,
-                        child: _isLoading
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Text('Load Report'),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
 
-          // Report Summary
-          if (_receipts.isNotEmpty)
-            Container(
-              margin: EdgeInsets.symmetric(horizontal: 16).copyWith(
-                top: _showFilters ? 0 : 16,
-              ),
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppTheme.primaryBlue.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Total Receipts: ${_receipts.length}',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
+              // Report Summary
+              if (_receipts.isNotEmpty)
+                Container(
+                  margin: EdgeInsets.symmetric(horizontal: 16).copyWith(
+                    top: _showFilters ? 0 : 16,
                   ),
-                  Text(
-                    'Total Quantity: ${_receipts.fold<int>(0, (sum, r) => sum + ((r['totalQuantity'] ?? 0) as num).toInt())}',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: AppTheme.primaryBlue,
-                    ),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryBlue.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                ],
-              ),
-            ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Total Receipts: ${_receipts.length}',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        'Total Quantity: ${_receipts.fold<int>(0, (sum, r) => sum + ((r['totalQuantity'] ?? 0) as num).toInt())}',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.primaryBlue,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
 
-          // Receipts List
-          if (!_showFilters) const SizedBox(height: 12),
+              if (!_showFilters) const SizedBox(height: 12),
 
-          Expanded(
-            child: _receipts.isEmpty
-                ? Center(
+              // Receipts List
+              if (_receipts.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 40),
+                  child: Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -650,8 +681,8 @@ class _ProductionReportPageState extends State<ProductionReportPage> {
                         Text(
                           _isLoading
                               ? 'Loading...'
-                              : _startDate == null || _endDate == null
-                                  ? 'Select date range to view report'
+                              : _startDate == null && _endDate == null && _receiptIdController.text.isEmpty
+                                  ? 'Select date range or enter receipt ID'
                                   : 'No receipts found',
                           style: TextStyle(
                             fontSize: 16,
@@ -660,103 +691,108 @@ class _ProductionReportPageState extends State<ProductionReportPage> {
                         ),
                       ],
                     ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _receipts.length,
-                    itemBuilder: (context, index) {
-                      final receipt = _receipts[index];
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        child: ExpansionTile(
-                          leading: Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: AppTheme.primaryBlue.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Icon(
-                              Icons.receipt_long_rounded,
-                              color: AppTheme.primaryBlue,
-                            ),
-                          ),
-                          title: Text(
-                            receipt['receiptNo'] ?? 'N/A',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          subtitle: Text(_formatDate(receipt['date'])),
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  _buildReportRow('Receipt No', receipt['receiptNo'] ?? 'N/A'),
-                                  _buildReportRow('Date', _formatDate(receipt['date'])),
-                                  _buildReportRow('Supervisor ID', receipt['supervisorId'] ?? 'N/A'),
-                                  _buildReportRow('Supervisor Name', receipt['supervisorName'] ?? 'N/A'),
-                                  _buildReportRow('Weaver ID', receipt['weaverId'] ?? 'N/A'),
-                                  _buildReportRow('Weaver Name', receipt['weaverName'] ?? 'N/A'),
-                                  const Divider(height: 24),
-                                  Text(
-                                    'Products:',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 14,
-                                      color: AppTheme.textSecondary,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    _formatProducts(receipt['products']),
-                                    style: const TextStyle(fontSize: 14),
-                                  ),
-                                  const Divider(height: 24),
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Text(
-                                        'Total Quantity:',
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: AppTheme.textSecondary,
-                                        ),
-                                      ),
-                                      Text(
-                                        '${receipt['totalQuantity'] ?? 0}',
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 16,
-                                          color: AppTheme.primaryBlue,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 16),
-                                  SizedBox(
-                                    width: double.infinity,
-                                    child: ElevatedButton.icon(
-                                      onPressed: () => _printSingleReceipt(receipt),
-                                      icon: const Icon(Icons.print),
-                                      label: const Text('Print This Receipt'),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: AppTheme.primaryBlue,
-                                        foregroundColor: Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
                   ),
+                )
+              else
+                ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: _receipts.length,
+                  itemBuilder: (context, index) {
+                    final receipt = _receipts[index];
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: ExpansionTile(
+                        leading: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: AppTheme.primaryBlue.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Icon(
+                            Icons.receipt_long_rounded,
+                            color: AppTheme.primaryBlue,
+                          ),
+                        ),
+                        title: Text(
+                          receipt['receiptNo'] ?? 'N/A',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        subtitle: Text(_formatDate(receipt['date'])),
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _buildReportRow('Receipt No', receipt['receiptNo'] ?? 'N/A'),
+                                _buildReportRow('Date', _formatDate(receipt['date'])),
+                                _buildReportRow('Supervisor ID', receipt['supervisorId'] ?? 'N/A'),
+                                _buildReportRow('Supervisor Name', receipt['supervisorName'] ?? 'N/A'),
+                                _buildReportRow('Weaver ID', receipt['weaverId'] ?? 'N/A'),
+                                _buildReportRow('Weaver Name', receipt['weaverName'] ?? 'N/A'),
+                                const Divider(height: 24),
+                                Text(
+                                  'Products:',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                    color: AppTheme.textSecondary,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  _formatProducts(receipt['products']),
+                                  style: const TextStyle(fontSize: 14),
+                                ),
+                                const Divider(height: 24),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      'Total Quantity:',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: AppTheme.textSecondary,
+                                      ),
+                                    ),
+                                    Text(
+                                      '${receipt['totalQuantity'] ?? 0}',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16,
+                                        color: AppTheme.primaryBlue,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 16),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: ElevatedButton.icon(
+                                    onPressed: () => _printSingleReceipt(receipt),
+                                    icon: const Icon(Icons.print),
+                                    label: const Text('Print This Receipt'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: AppTheme.primaryBlue,
+                                      foregroundColor: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

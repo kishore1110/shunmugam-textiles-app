@@ -17,6 +17,9 @@ class _AddProductionPageState extends State<AddProductionPage> {
   final _firestoreService = FirestoreService();
   final _weaverIdController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _dateController;
+  DateTime _selectedDate = DateTime.now();
+  bool _suppressWeaverSearch = false;
 
   List<Map<String, dynamic>> _weavers = [];
   Map<String, dynamic>? _selectedWeaver;
@@ -39,12 +42,14 @@ class _AddProductionPageState extends State<AddProductionPage> {
     super.initState();
     _loadProducts();
     _weaverIdController.addListener(_searchWeavers);
+    _dateController = TextEditingController(text: _formatDate(_selectedDate));
   }
 
   @override
   void dispose() {
     _weaverIdController.removeListener(_searchWeavers);
     _weaverIdController.dispose();
+    _dateController.dispose();
     for (var controller in _quantityControllers.values) {
       controller.dispose();
     }
@@ -54,9 +59,53 @@ class _AddProductionPageState extends State<AddProductionPage> {
     super.dispose();
   }
 
+  String _formatDate(DateTime date) {
+    final twoDigits = (int n) => n.toString().padLeft(2, '0');
+    return '${twoDigits(date.day)}/${twoDigits(date.month)}/${date.year}';
+  }
+
+  DateTime? _tryParseInputDate(String value) {
+    final parts = value.split('/');
+    if (parts.length == 3) {
+      final day = int.tryParse(parts[0]);
+      final month = int.tryParse(parts[1]);
+      final year = int.tryParse(parts[2]);
+      if (day != null && month != null && year != null) {
+        return DateTime(year, month, day);
+      }
+    }
+    // fallback for ISO or other parseable formats
+    return DateTime.tryParse(value);
+  }
+
+  Future<void> _pickDate() async {
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+
+    if (pickedDate != null) {
+      setState(() {
+        _selectedDate = DateTime(
+          pickedDate.year,
+          pickedDate.month,
+          pickedDate.day,
+        );
+        _dateController.text = _formatDate(_selectedDate);
+      });
+    }
+  }
+
   Future<void> _loadProducts() async {
     setState(() => _isLoading = true);
     final products = await _firestoreService.getAllProducts();
+    products.sort((a, b) {
+      final aSerial = (a['serialNo'] ?? 1e9) as num;
+      final bSerial = (b['serialNo'] ?? 1e9) as num;
+      return aSerial.compareTo(bSerial);
+    });
     _disposeAllQuantityEntryControllers();
     for (var controller in _quantityControllers.values) {
       controller.dispose();
@@ -75,6 +124,7 @@ class _AddProductionPageState extends State<AddProductionPage> {
   }
 
   Future<void> _searchWeavers() async {
+    if (_suppressWeaverSearch) return;
     final query = _weaverIdController.text.trim();
     if (query.isEmpty) {
       setState(() {
@@ -84,25 +134,27 @@ class _AddProductionPageState extends State<AddProductionPage> {
       return;
     }
 
+    // Reset selection when user edits the input
+    setState(() => _selectedWeaver = null);
+
     setState(() => _isSearching = true);
     final weavers = await _firestoreService.searchWeavers(query);
     setState(() {
       _weavers = weavers;
       _isSearching = false;
-      // Auto-select if exact match
-      if (weavers.length == 1 && weavers.first['weaverId'] == query) {
-        _selectedWeaver = weavers.first;
-      } else {
-        _selectedWeaver = null;
-      }
     });
   }
 
   void _selectWeaver(Map<String, dynamic> weaver) {
+    _suppressWeaverSearch = true;
     setState(() {
       _selectedWeaver = weaver;
       _weaverIdController.text = weaver['weaverId'] ?? '';
       _weavers = [];
+    });
+    // Re-enable search after this tick to avoid re-querying while we set text
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _suppressWeaverSearch = false;
     });
     FocusScope.of(context).unfocus();
   }
@@ -190,6 +242,7 @@ class _AddProductionPageState extends State<AddProductionPage> {
         receiptNo: receiptNo,
         supervisorId: widget.userData['supervisorId'] ?? '',
         supervisorName: widget.userData['name'] ?? '',
+        selectedDate: _selectedDate,
         weaverId: _selectedWeaver!['weaverId'] ?? '',
         weaverName: _selectedWeaver!['name'] ?? '',
         products: _products,
@@ -208,7 +261,7 @@ class _AddProductionPageState extends State<AddProductionPage> {
         'supervisorName': widget.userData['name'],
         'weaverId': _selectedWeaver!['weaverId'],
         'weaverName': _selectedWeaver!['name'],
-        'date': Timestamp.now(),
+        'date': Timestamp.fromDate(_selectedDate),
         'products': selectedProducts.map((key, value) {
           final product = _products.firstWhere((p) => p['id'] == key);
           return MapEntry(key, {
@@ -256,7 +309,7 @@ class _AddProductionPageState extends State<AddProductionPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Supervisor Info Card
+              // Date Card
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -269,7 +322,7 @@ class _AddProductionPageState extends State<AddProductionPage> {
                           borderRadius: BorderRadius.circular(10),
                         ),
                         child: const Icon(
-                          Icons.person_rounded,
+                          Icons.calendar_today_rounded,
                           color: AppTheme.primaryBlue,
                         ),
                       ),
@@ -279,27 +332,51 @@ class _AddProductionPageState extends State<AddProductionPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Supervisor',
+                              'Date',
                               style: TextStyle(
                                 fontSize: 12,
                                 color: AppTheme.textSecondary,
                               ),
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Supervisor ID - ${widget.userData['supervisorId']}',
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
+                            const SizedBox(height: 8),
+                            TextFormField(
+                              controller: _dateController,
+                              decoration: const InputDecoration(
+                                hintText: 'Select date',
+                                prefixIcon: Icon(Icons.event),
+                                suffixIcon: Icon(Icons.edit_calendar_rounded),
                               ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Supervisor Name - ${widget.userData['name']}',
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
+                              readOnly: false,
+                              onTap: _pickDate,
+                              keyboardType: TextInputType.datetime,
+                              validator: (value) {
+                                if (value == null || value.isEmpty) {
+                                  return 'Please select a date';
+                                }
+                  final parsed = _tryParseInputDate(value);
+                  if (parsed == null) {
+                                  return 'Invalid date';
+                                }
+                                return null;
+                              },
+                              onChanged: (value) {
+                  final parsed = _tryParseInputDate(value);
+                                if (parsed != null) {
+                                  setState(() {
+                                    _selectedDate = DateTime(
+                                      parsed.year,
+                                      parsed.month,
+                                      parsed.day,
+                                    );
+                      _dateController.value = _dateController.value.copyWith(
+                        text: _formatDate(_selectedDate),
+                        selection: TextSelection.collapsed(
+                          offset: _formatDate(_selectedDate).length,
+                        ),
+                      );
+                                  });
+                                }
+                              },
                             ),
                           ],
                         ),
@@ -318,6 +395,8 @@ class _AddProductionPageState extends State<AddProductionPage> {
               const SizedBox(height: 8),
               TextFormField(
                 controller: _weaverIdController,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 decoration: InputDecoration(
                   hintText: 'Enter weaver ID',
                   prefixIcon: const Icon(Icons.search),
@@ -330,7 +409,18 @@ class _AddProductionPageState extends State<AddProductionPage> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                         )
-                      : null,
+                      : (_selectedWeaver != null || _weaverIdController.text.isNotEmpty)
+                          ? IconButton(
+                              icon: const Icon(Icons.close),
+                              onPressed: () {
+                                setState(() {
+                                  _weaverIdController.clear();
+                                  _selectedWeaver = null;
+                                  _weavers = [];
+                                });
+                              },
+                            )
+                          : null,
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
@@ -413,7 +503,10 @@ class _AddProductionPageState extends State<AddProductionPage> {
                 ),
               ],
 
-              if (_weavers.isEmpty && _weaverIdController.text.isNotEmpty && !_isSearching)
+              if (_weavers.isEmpty &&
+                  _weaverIdController.text.isNotEmpty &&
+                  !_isSearching &&
+                  _selectedWeaver == null)
                 Container(
                   margin: const EdgeInsets.only(top: 8),
                   padding: const EdgeInsets.all(12),
@@ -694,6 +787,7 @@ class _ConfirmationDialog extends StatelessWidget {
   final String receiptNo;
   final String supervisorId;
   final String supervisorName;
+  final DateTime selectedDate;
   final String weaverId;
   final String weaverName;
   final List<Map<String, dynamic>> products;
@@ -704,12 +798,18 @@ class _ConfirmationDialog extends StatelessWidget {
     required this.receiptNo,
     required this.supervisorId,
     required this.supervisorName,
+    required this.selectedDate,
     required this.weaverId,
     required this.weaverName,
     required this.products,
     required this.productQuantities,
     required this.totalQuantity,
   });
+
+  String _formatDate(DateTime date) {
+    final twoDigits = (int n) => n.toString().padLeft(2, '0');
+    return '${twoDigits(date.day)}/${twoDigits(date.month)}/${date.year}';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -746,7 +846,7 @@ class _ConfirmationDialog extends StatelessWidget {
               ),
               const SizedBox(height: 24),
               _buildInfoRow('Receipt No', receiptNo),
-              _buildInfoRow('Date', DateTime.now().toString().split(' ')[0]),
+              _buildInfoRow('Date', _formatDate(selectedDate)),
               _buildInfoRow('Supervisor ID', supervisorId),
               _buildInfoRow('Supervisor Name', supervisorName),
               _buildInfoRow('Weaver ID', weaverId),
